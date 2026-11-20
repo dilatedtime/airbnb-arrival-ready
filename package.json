@@ -1,0 +1,1 @@
+{"name":"airbnb-arrival-ready","private":true,"version":"2.0.0","type":"module","scripts":{"build":"node build.mjs","dev":"node serve.mjs"},"dependencies":{"react":"19.2.0","react-dom":"19.2.0","esbuild":"0.25.11","@fontsource/inter":"5.2.8"}}

@@ -1,0 +1,17 @@
+AIRBNB ARRIVAL READY
+
+Open index.html in a browser. Keep the assets folder beside it.
+
+Or visit:
+https://dilatedtime.github.io/airbnb-arrival-ready/
+
+To review the solution, open Trips, then Cedar House. The Arrival plan tab leads to the saved pack, companion copy and entry recovery.
+
+New labels show the proposed additions. Use Show added features to hide the labels. What's new explains each change.
+
+Test conditions lets you try low battery, no signal, a broken lock and a dead phone. You can reset and repeat the journey as often as you want.
+
+The account menu opens the host and support screens. The full source is at:
+https://github.com/dilatedtime/airbnb-arrival-ready
+
+All property details, people, reviews, prices and bookings are fictional examples. Calls, sharing and reservations are simulated. No real booking or payment is made.

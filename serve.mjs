@@ -1,0 +1,4 @@
+import http from 'node:http';
+import fs from 'node:fs/promises';
+const port=4180;
+http.createServer(async(req,res)=>{try{let pathname=new URL(req.url,'http://localhost').pathname;const prefix='/airbnb-arrival-ready/';if(pathname.startsWith(prefix))pathname='/'+pathname.slice(prefix.length);let file=decodeURIComponent(pathname==='/'?'index.html':pathname.slice(1));if(file.includes('..')){res.writeHead(403).end();return;}const body=await fs.readFile(new URL('./docs/'+file,import.meta.url));const types={html:'text/html; charset=utf-8',js:'application/javascript',css:'text/css',svg:'image/svg+xml',jpg:'image/jpeg',png:'image/png',txt:'text/plain'};res.writeHead(200,{'Content-Type':types[file.split('.').pop()]||'application/octet-stream','Cache-Control':'no-store'}).end(body)}catch{res.writeHead(404).end('Not found')}}).listen(port,'127.0.0.1',()=>console.log('Local: http://127.0.0.1:'+port));
