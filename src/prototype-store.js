@@ -8,7 +8,7 @@ const bool=value=>value===true;
 const text=(value,max=1500)=>String(value??'').trim().slice(0,max);
 const copyPlan=plan=>plan?{...plan}:null;
 const clock=s=>{const minutes=60+Math.max(0,Number(s.clockMinute)||45);return String(Math.floor(minutes/60)).padStart(2,'0')+':'+String(minutes%60).padStart(2,'0');};
-const event=(s,patch,label)=>{const sequence=(s.sequence||0)+1;const next={...s,...patch,sequence};return {...next,events:[...(s.events||[]),{id:'event-'+sequence,time:clock(next),text:label}].slice(-200)};};
+const event=(s,patch,label)=>{const sequence=(s.sequence||0)+1;const next={...s,...patch,sequence};if(next.incident&&(Object.hasOwn(patch,'contactAttempts')||Object.hasOwn(patch,'contactLog')))next.incident={...next.incident,evidence:{...next.incident.evidence,contactAttempts:next.contactAttempts||0,contactLog:[...(next.contactLog||[])]}};return {...next,events:[...(s.events||[]),{id:'event-'+sequence,time:clock(next),text:label}].slice(-200)};};
 const msg=(s,from,value,queued=false,extra={})=>({id:'message-'+(s.sequence+1)+'-'+((s.messages?.length||0)+(s.supportMessages?.length||0)),from,text:text(value),time:clock(s),queued,...extra});
 const isDelivered=s=>!!s.incident&&['received','reviewing','options','booked','resolved'].includes(s.incident.status);
 const isActive=s=>!!s.incident&&s.incident.status!=='resolved';
@@ -19,6 +19,14 @@ const withReply=(s,label,patch={})=>{
 };
 const cleanPlan=plan=>Object.fromEntries(PLAN_KEYS.map(k=>[k,text(plan?.[k],k==='fallback'?700:300)]));
 const validPlan=plan=>/^\d{4,8}#?$/.test(plan.code)&&plan.entrance.length>=8&&plan.fallback.length>=12&&plan.fallback.toLowerCase()!==plan.entrance.toLowerCase()&&!!plan.contact&&!!plan.backupContact&&!!plan.overnight;
+const reasonCodes={ready:'ENTRANCE_UNCLEAR',code:'CODE_REJECTED',dark:'KEYPAD_DARK',jam:'LOCK_JAMMED'};
+const primaryOutcomes={ready:'Entrance could not be found',code:'Saved code entered once and rejected',dark:'Code attempt skipped because the keypad is dark',jam:'Code attempt skipped because the lock is jammed'};
+const cleanPhoto=value=>typeof value==='string'&&/^data:image\/(jpeg|png|webp);base64,/.test(value)&&value.length<=220000?value:null;
+export function arrivalSmsText(s){
+ const incident=s.incident;
+ if(!incident)return '';
+ return `ARRIVAL HELP\nBooking HMX482\nIncident ${incident.id}\nReason ${incident.reasonCode||reasonCodes[s.lockStatus]||'ENTRY_FAILED'}\n4 guests at Cedar House, 18 Cedar Lane. ${incident.reason}.\nHost contact attempts: ${incident.evidence?.contactAttempts||0}. Please call back or confirm receipt. Do not book a stay without my agreement.`;
+}
 
 export function createInitialState(){
  const publishedPlan={...draftPlan,version:4,verifiedAt:'17:38',fallbackReady:true,hostAvailable:true};
@@ -32,7 +40,8 @@ export function createInitialState(){
   party:[{id:'meera',name:'Meera',role:'Booking guest',saved:true},{id:'rohan',name:'Rohan',role:'Co-traveler',saved:false},{id:'sana',name:'Sana',role:'Co-traveler',saved:false},{id:'kabir',name:'Kabir',role:'Co-traveler',saved:false}],
   messages:[{id:'host-welcome',from:'host',text:'Hi Meera! Your late arrival is confirmed. Look for green gate 18. I verified the staffed lodge backup and left everything in your arrival guide.',time:'17:38',queued:false,delivered:true}],
   supportMessages:[],guideTab:'entrance',tripStatus:'confirmed',entered:false,lockStatus:'ready',diagnosticStep:0,callStatus:'idle',
-  incident:null,reviewApproved:false,hotelAvailability:true,selectedHotel:'pine',includeRide:true,coverageCap:4500,booking:null,
+  incident:null,reviewApproved:false,hotelAvailability:true,selectedHotel:'pine',includeRide:true,coverageCap:4350,totalIncidentCap:4500,staffCost:150,booking:null,
+  failureStartedElapsed:null,primaryAttempt:null,backupResult:null,contactAttempts:0,contactLog:[],
   events:[{id:'event-1',time:'17:38',text:'Anita verified arrival plan version 4 and independent backup entry.'},{id:'event-2',time:'17:40',text:'Arrival pack version 4 saved on Meera’s device.'}]
  };
 }
@@ -42,7 +51,7 @@ function onlinePatch(s,data,cell){
  if(!data)return patch;
  patch.messages=(s.messages||[]).map(m=>m.queued?{...m,queued:false,delivered:false,time:clock(s)}:m);
  patch.supportMessages=(s.supportMessages||[]).map(m=>m.queued?{...m,queued:false,time:clock(s)}:m);
- if(s.incident?.status==='local')patch.incident={...s.incident,status:'sent',sentAt:clock(s)};
+ if(s.incident?.status==='local')patch.incident={...s.incident,status:'sent',transport:'data',sentAt:clock(s)};
  if(s.peerRevocationPending){patch={...patch,peerRevocationPending:false,peerSaved:false,peerAccepted:false,companionSnapshot:null,party:s.party.map((p,i)=>i===1?{...p,saved:false}:p)};if(s.connectedDevice==='companion'){patch.packSaved=false;patch.packSnapshot=null;}}
  return patch;
 }
@@ -113,32 +122,51 @@ export function reducer(s,a){
   case 'SET_HOST_AVAILABLE': return event(s,{hostAvailable:bool(a.value)},a.value?'Overnight contacts confirmed available.':'Overnight contact cover marked unavailable.');
   case 'SET_FALLBACK_READY': return event(s,{fallbackReady:bool(a.value)},a.value?'Host confirmed an independent backup route.':'Independent backup needs host review.');
   case 'SET_HEALTH_SOURCE': return ['manual','native','pms'].includes(a.value)?event(s,{healthSource:a.value},a.value==='manual'?'Showing the last manual host check.':a.value==='pms'?'PMS source selected. Real-time lock health remains Unknown.':'Direct integration example selected. This India listing has no eligible native health connection.'):s;
-  case 'SET_DIAGNOSTIC': return Number.isInteger(a.value)&&a.value>=0&&a.value<=3?{...s,diagnosticStep:a.value}:s;
-  case 'SET_LOCK_STATUS': return ['ready','code','dark','jam'].includes(a.value)?event(s,{lockStatus:a.value},'Guest reported entry state: '+({ready:'entrance unclear',code:'code rejected',dark:'keypad dark',jam:'mechanical jam'}[a.value])+'.'):s;
-  case 'CALL_HOST': if(s.battery<=0)return s;return event(s,{callStatus:s.cell?'ringing':'unreachable'},s.cell?'Simulated call to the agreed overnight contact.':'No cellular service. The overnight call did not connect.');
-  case 'SET_CALL_STATUS': if(!['idle','ringing','answered','missed','unreachable'].includes(a.value))return s;return event(s,{callStatus:!s.cell&&a.value==='answered'?'unreachable':a.value,...(a.value==='missed'?{clockMinute:s.clockMinute+4,elapsed:s.elapsed+4}:{})},a.value==='answered'&&s.cell?'Overnight contact answered. Working entry still needs confirmation.':a.value==='missed'?'Two sample contact attempts unanswered. Entry remains unresolved.':'Contact call state updated.');
+  case 'SET_DIAGNOSTIC': return Number.isInteger(a.value)&&a.value>=0&&a.value<=3?{...s,diagnosticStep:a.value,...(a.value>0&&s.failureStartedElapsed==null?{failureStartedElapsed:s.elapsed}:{}),...(a.value===1&&!s.primaryAttempt?{primaryAttempt:primaryOutcomes[s.lockStatus]}:{})}:s;
+  case 'SET_LOCK_STATUS': return ['ready','code','dark','jam'].includes(a.value)?event(s,{lockStatus:a.value,primaryAttempt:null,failureStartedElapsed:s.failureStartedElapsed??s.elapsed},'Guest reported entry state: '+({ready:'entrance unclear',code:'code rejected',dark:'keypad dark',jam:'mechanical jam'}[a.value])+'.'):s;
+  case 'RECORD_BACKUP_RESULT': return ['unavailable','not-tried'].includes(a.value)?event(s,{backupResult:a.value},a.value==='unavailable'?'Guest reported the independent backup unavailable or unsuccessful.':'Independent backup has not been tried.'):s;
+  case 'CALL_HOST': {
+   if(s.battery<=0)return s;
+   const connected=!!s.cell;
+   return event(s,{callStatus:connected?'ringing':'unreachable',contactAttempts:(s.contactAttempts||0)+(connected?1:0),contactLog:[...(s.contactLog||[]),{time:clock(s),result:connected?'Call started in demo':'No cellular service, call could not start'}].slice(-20)},connected?'Simulated call to the agreed overnight contact.':'No cellular service. The overnight call did not connect.');
+  }
+  case 'SET_CALL_STATUS': {
+   if(!['idle','ringing','answered','missed','unreachable'].includes(a.value))return s;
+   const value=!s.cell&&['answered','missed'].includes(a.value)?'unreachable':a.value;
+   return event(s,{callStatus:value,contactAttempts:value==='missed'?Math.max(2,s.contactAttempts||0):s.contactAttempts,contactLog:[...(s.contactLog||[]),{time:clock(s),result:value==='missed'?'Two sample calls unanswered':value==='answered'?'Contact answered in demo':value}].slice(-20),...(value==='missed'?{clockMinute:s.clockMinute+4,elapsed:s.elapsed+4,supportElapsed:s.supportElapsed+(s.incident?.receivedAt?4:0)}:{})},value==='answered'?'Overnight contact answered. Working entry still needs confirmation.':value==='missed'?'Two sample contact attempts unanswered. Entry remains unresolved.':'Contact call state updated.');
+  }
   case 'CREATE_INCIDENT': {
    if(s.incident)return s;
    if(s.battery<=0)return s;
-   const evidence=a.evidence||{},incident={id:'ARR-1842',status:s.data?'sent':'local',reason:text(a.reason||'Unable to enter',180),createdAt:clock(s),sentAt:s.data?clock(s):null,receivedAt:null,firstResponseAt:null,evidence:{arrival:bool(evidence.arrival),location:bool(evidence.location),attempts:bool(evidence.attempts),notes:text(evidence.notes,600)},outcome:null};
+   const evidence=a.evidence||{},incident={id:'ARR-1842',bookingId:'HMX482',status:s.data?'sent':'local',transport:s.data?'data':null,reason:text(a.reason||'Unable to enter',180),reasonCode:reasonCodes[s.lockStatus]||'ENTRY_FAILED',createdAt:clock(s),sentAt:s.data?clock(s):null,receivedAt:null,firstResponseAt:null,evidence:{arrival:bool(evidence.arrival),location:bool(evidence.location),attempts:bool(evidence.attempts),primaryOutcome:text(s.primaryAttempt||'Not confirmed by guest',180),backupOutcome:bool(evidence.attempts)?'Unavailable or tried without success':s.backupResult==='unavailable'?'Unavailable or tried without success':'Not confirmed by guest',contactAttempts:s.contactAttempts||0,contactLog:[...(s.contactLog||[])],photo:cleanPhoto(evidence.photo),photoName:text(evidence.photoName,100),notes:text(evidence.notes,600)},outcome:null};
    return event(s,{incident,reviewApproved:false,supportElapsed:0},s.data?'Arrival report sent. Waiting for support receipt.':'Arrival report saved only on this device. Support has not received it.');
   }
-  case 'UPDATE_EVIDENCE': if(!s.incident||!['arrival','location','attempts','notes'].includes(a.key))return s;return event(s,{incident:{...s.incident,evidence:{...s.incident.evidence,[a.key]:a.key==='notes'?text(a.value,600):bool(a.value)}}},'Guest arrival evidence updated.');
+  case 'UPDATE_EVIDENCE': if(!s.incident||!['arrival','location','attempts','notes','photo'].includes(a.key))return s;return event(s,{incident:{...s.incident,evidence:{...s.incident.evidence,[a.key]:a.key==='notes'?text(a.value,600):a.key==='photo'?cleanPhoto(a.value):bool(a.value)}}},'Guest arrival evidence updated.');
   case 'QUEUE_INCIDENT': if(!s.incident||isDelivered(s))return s;return event(s,{incident:{...s.incident,status:'local'}},'Arrival report kept locally. No receipt acknowledged.');
-  case 'SEND_INCIDENT': if(!s.data||!s.incident||s.incident.status!=='local')return s;return event(s,{incident:{...s.incident,status:'sent',sentAt:clock(s)}},'Saved arrival report sent. Waiting for support receipt.');
+  case 'SAVE_SMS_DRAFT': if(!s.incident||isDelivered(s))return s;return event(s,{incident:{...s.incident,smsDraft:text(a.text,1000)}},'SMS draft saved on this device. No message has been sent.');
+  case 'SEND_SMS_DEMO': {
+   if(!s.cell||s.battery<=0||!s.incident||isDelivered(s))return s;
+   const draft=text(a.text||s.incident.smsDraft||arrivalSmsText(s),1000);if(!draft.includes('HMX482')||!draft.includes(s.incident.id))return s;
+   return event(s,{incident:{...s.incident,status:'sent',transport:'sms',smsDraft:draft,sentAt:clock(s)}},'SMS marked sent in the demo. Support receipt is still unconfirmed.');
+  }
+  case 'ACK_SMS_DEMO': {
+   if(!s.cell||s.battery<=0||s.incident?.status!=='sent'||s.incident.transport!=='sms')return s;
+   return event(s,{incident:{...s.incident,status:'received',receivedAt:clock(s)},supportElapsed:0,supportMessages:[...s.supportMessages,msg(s,'Arrival Ready','Demo SMS receipt: report '+s.incident.id+' is received. A support callback and coverage review are still needed. No stay or ride has been booked.',false,{transport:'sms'})]},'Demo SMS receipt acknowledged separately from sending. The support response clock starts now.');
+  }
+  case 'SEND_INCIDENT': if(!s.data||!s.incident||s.incident.status!=='local')return s;return event(s,{incident:{...s.incident,status:'sent',transport:'data',sentAt:clock(s)}},'Saved arrival report sent. Waiting for support receipt.');
   case 'ACK_INCIDENT':
   case 'SUPPORT_RECEIVE': {
-   if(!s.data||!s.incident||isDelivered(s))return s;
+   if(!s.data||!s.incident||s.incident.status!=='sent')return s;
    return event(s,{incident:{...s.incident,status:'received',sentAt:s.incident.sentAt||clock(s),receivedAt:clock(s)},supportElapsed:0,supportMessages:[...s.supportMessages,msg(s,'Arrival Ready','Your report reached arrival support. Your booking and entry attempts are attached.')]},'Support receipt acknowledged. The support response clock starts now.');
   }
   case 'REQUEST_OPTIONS': {
    if(!s.data||!s.incident)return s;
    if(s.incident.status==='received')return withReply(s,'I’m checking the failed entry, host backup, coverage and nearby stays for all four guests.',{incident:{...s.incident,status:'reviewing'}});
-   if(s.incident.status==='reviewing')return withReply(s,s.hotelAvailability?'The sample recovery review is complete. Two example stays are ready for you to compare. Please review the coverage and accept before booking.':'The recovery review is complete, but no alternative stay is confirmed. I need to check another provider. Your issue stays open.',{reviewApproved:true,incident:{...s.incident,status:'options'}});
+   if(s.incident.status==='reviewing')return withReply(s,s.hotelAvailability?'The sample recovery review is complete. Two example stays are ready for you to compare. Please review the coverage and accept before booking.':'The recovery review is complete, but no alternative stay is confirmed. I need to check another provider. Your issue stays open.',{reviewApproved:true,incident:{...s.incident,status:'options',bookingVerified:true,reviewedBy:'Asha',reviewedAt:clock(s)}});
    return s;
   }
   case 'SUPPORT_REVIEW': if(!s.data||s.incident?.status!=='received')return s;return event(s,{incident:{...s.incident,status:'reviewing'}},'Support began the failed-entry and coverage review.');
-  case 'SUPPORT_APPROVE': if(!s.data||s.incident?.status!=='reviewing')return s;return event(s,{reviewApproved:bool(a.value)},a.value?'Support reviewed the active booking and failed independent backup. Coverage review completed.':'Support requested more review information. Assistance remains available.');
+  case 'SUPPORT_APPROVE': if(!s.data||s.incident?.status!=='reviewing')return s;return event(s,{reviewApproved:bool(a.value),incident:{...s.incident,bookingVerified:bool(a.value),reviewedBy:a.value?'Asha':null,reviewedAt:a.value?clock(s):null}},a.value?'Support reviewed the active booking and failed independent backup. Coverage review completed.':'Support requested more review information. Assistance remains available.');
   case 'SUPPORT_MARK_OPTIONS': if(!s.data||!s.reviewApproved||!s.hotelAvailability||!s.incident||!['reviewing','options'].includes(s.incident.status))return s;return withReply(s,'Nearby sample stay options are available for review. Your acceptance is required before confirmation.',{incident:{...s.incident,status:'options'}});
   case 'SEND_SUPPORT_MESSAGE': {
    const value=text(a.text,1500);if(!value||!s.incident||s.battery<=0)return s;
@@ -152,8 +180,8 @@ export function reducer(s,a){
   case 'SET_RIDE': return {...s,includeRide:bool(a.value)};
   case 'CONFIRM_BOOKING': {
    if(!s.data||s.battery<=0||!s.hotelAvailability||!s.reviewApproved||s.incident?.status!=='options'||a.consent!==true||(s.booking&&s.booking.status!=='cancelled'))return s;
-   const hotel=hotelData[s.selectedHotel]||hotelData.pine,total=hotel.price+(s.includeRide?350:0),credit=Math.min(total,s.coverageCap),contribution=Math.max(0,total-credit);
-   const booking={hotelId:hotel.id,name:hotel.name,ref:'DEMO-1842',ride:s.includeRide,status:'confirmed',total,credit,contribution,confirmedAt:clock(s)};
+   const hotel=hotelData[s.selectedHotel]||hotelData.pine,total=hotel.price+(s.includeRide?350:0),staffCost=s.staffCost??150,totalIncidentCap=s.totalIncidentCap??4500,credit=Math.min(total,s.coverageCap??totalIncidentCap-staffCost,totalIncidentCap-staffCost),contribution=Math.max(0,total-credit),platformCost=credit+staffCost;
+   const booking={hotelId:hotel.id,name:hotel.name,ref:'DEMO-1842',ride:s.includeRide,status:'confirmed',total,credit,contribution,staffCost,totalIncidentCap,platformCost,headroom:Math.max(0,totalIncidentCap-platformCost),confirmedAt:clock(s)};
    return withReply(s,'Your example reservation at '+hotel.name+' is confirmed'+(s.includeRide?' with a group ride.':'.')+' Please tell us when your group is inside.',{booking,incident:{...s.incident,status:'booked'},entered:false});
   }
   case 'CANCEL_BOOKING': {
